@@ -1,0 +1,93 @@
+# Define FL Client with DP support
+import numpy as np
+import flwr as fl
+from typing import Dict, List, Tuple
+
+class HybridClient(fl.client.NumPyClient):
+    def __init__(self, model, trainloader, dp_engine=None):
+        """
+        Initialize federated client with optional DP
+        
+        Args:
+            model: HybridDP_LoRA model
+            trainloader: DataLoader for training
+            dp_engine: AdaptiveDPE instance for privacy
+        """
+        self.model = model
+        self.trainloader = trainloader
+        self.dp_engine = dp_engine
+        self.optimizer = torch.optim.AdamW(
+            [p for p in model.parameters() if p.requires_grad],
+            lr=2e-5
+        )
+        
+        # Apply DP if engine provided
+        if dp_engine:
+            self.model, self.optimizer, _ = dp_engine.make_private(
+                model=self.model, 
+                optimizer=self.optimizer
+            )
+    
+    def get_parameters(self, config) -> List[np.ndarray]:
+        """Extract NumPy arrays from LoRA A parameters"""
+        return [
+            p.detach().cpu().numpy() 
+            for name, p in self.model.named_parameters() 
+            if "lora_A" in name and p.requires_grad
+        ]
+    
+    def set_parameters(self, parameters: List[np.ndarray]) -> None:
+        """Update LoRA A parameters from aggregated weights"""
+        params_dict = {
+            n: p for n, p in self.model.named_parameters() 
+            if "lora_A" in n and p.requires_grad
+        }
+        for param, new_param in zip(params_dict.values(), parameters):
+            param.data = torch.from_numpy(new_param).to(param.device)
+    
+    def fit(self, parameters, config) -> Tuple[List[np.ndarray], int, Dict]:
+        """Train model on local data with DP"""
+        # Update global parameters
+        self.set_parameters(parameters)
+        
+        # Training loop
+        self.model.train()
+        for epoch in range(config.get("local_epochs", 1)):
+            for batch_idx, batch in enumerate(self.trainloader):
+                input_ids = batch["input_ids"].to(self.model.device)
+                labels = batch["labels"].to(self.model.device)
+                
+                # Forward pass
+                outputs = self.model(input_ids=input_ids, labels=labels)
+                loss = outputs.loss
+                
+                # Backward and optimize
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+                
+                if batch_idx % 10 == 0:
+                    print(f"Epoch {epoch}, Batch {batch_idx}, Loss: {loss.item():.4f}")
+        
+        # Return updated model parameters
+        return self.get_parameters({}), len(self.trainloader), {}
+    
+    def evaluate(self, parameters, config):
+        """Evaluate model on local data"""
+        self.set_parameters(parameters)
+        self.model.eval()
+        
+        total_loss = 0.0
+        num_batches = 0
+        
+        with torch.no_grad():
+            for batch in self.trainloader:  # Using train data for simplicity
+                input_ids = batch["input_ids"].to(self.model.device)
+                labels = batch["labels"].to(self.model.device)
+                
+                outputs = self.model(input_ids=input_ids, labels=labels)
+                total_loss += outputs.loss.item()
+                num_batches += 1
+        
+        avg_loss = total_loss / num_batches
+        return float(avg_loss), len(self.trainloader), {"perplexity": float(torch.exp(torch.tensor(avg_loss)))}
