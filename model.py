@@ -1,13 +1,8 @@
-%%writefile model.py
-
+# Define HybridDP-LoRA model
 import torch
 import torch.nn as nn
-from huggingface_hub import login
 from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model
-
-# Authenticate with your token
-login(token="hf_token")  # Replace with actual token
 
 class HybridDP_LoRA(nn.Module):
     def __init__(
@@ -18,6 +13,7 @@ class HybridDP_LoRA(nn.Module):
     ):
         super().__init__()
         
+        # Setup quantization config
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=use_4bit,
             bnb_4bit_use_double_quant=True,
@@ -25,16 +21,25 @@ class HybridDP_LoRA(nn.Module):
             bnb_4bit_compute_dtype=torch.bfloat16
         ) if use_4bit else None
         
+        # HF authentication (if needed)
+        try:
+            from huggingface_hub import login
+            login(token=os.environ.get("hf_token", ""))
+        except:
+            print("No authentication token found. Proceeding without login.")
+        
+        # Load model with explicit device control
         self.base_model = AutoModelForCausalLM.from_pretrained(
             base_model_name,
             quantization_config=bnb_config,
-            device_map="auto",
-            torch_dtype=torch.bfloat16,
-            use_auth_token=True  # Critical for gated models
+            device_map="auto",  # Auto-distribute on available GPU(s)
+            torch_dtype=torch.bfloat16
         )
         
+        # Memory optimizations
         self.base_model.gradient_checkpointing_enable()
         
+        # Apply LoRA
         self.model = get_peft_model(
             self.base_model,
             LoraConfig(
@@ -45,17 +50,27 @@ class HybridDP_LoRA(nn.Module):
                 task_type="CAUSAL_LM"
             )
         )
+        
+        # Cache property for convenience
+        self.device = next(self.parameters()).device
 
-    def forward(self, input_ids: torch.Tensor, labels: torch.Tensor = None):
+    def forward(self, input_ids, labels=None):
+        """Forward pass with explicit device handling"""
         return self.model(
             input_ids=input_ids,
             labels=labels,
-            output_attentions=True,
             output_hidden_states=True,
             return_dict=True
         )
-
+    
+    def freeze_lora_A(self):
+        """Freeze LoRA A matrices for local personalization stage"""
+        for name, param in self.model.named_parameters():
+            if "lora_A" in name:
+                param.requires_grad_(False)
+    
     def print_trainable_parameters(self):
+        """Display parameter statistics"""
         trainable = sum(p.numel() for p in self.parameters() if p.requires_grad)
         total = sum(p.numel() for p in self.parameters())
         print(f"Trainable params: {trainable} ({100*trainable/total:.2f}%)")
