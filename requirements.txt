@@ -1,0 +1,18 @@
+# Core Dependencies  
+torch==2.3.0+cu121  # PyTorch with CUDA 12.1 support  
+bitsandbytes==0.43.0  # 4-bit quantization (CUDA 12.1 compatible)  
+transformers==4.38.2  # Hugging Face model loading/training  
+peft==0.10.0  # LoRA implementations  
+
+# Federated Learning  
+flwr==1.8.0  # Flower framework  
+opacus==1.5.0  # Differential privacy  
+
+# Additional Utilities  
+datasets==2.18.0  # Hugging Face datasets  
+accelerate==0.27.2  # Distributed training  
+scikit-learn==1.4.0  # Evaluation metrics  
+matplotlib==3.8.3  # Visualization  
+tqdm==4.66.2  # Progress bars  
+huggingface-hub==0.20.3  # Model storage/loading  
+protobuf==3.20.3  # Serialization compatibility  
